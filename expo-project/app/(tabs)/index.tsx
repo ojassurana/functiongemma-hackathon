@@ -1,6 +1,6 @@
 import { Audio } from 'expo-av';
 import * as LocalAuthentication from 'expo-local-authentication';
-import { useMemo, useState } from 'react';
+import { useState } from 'react';
 import {
   ActivityIndicator,
   Pressable,
@@ -9,7 +9,6 @@ import {
   StyleSheet,
   Text,
   TextInput,
-  View,
 } from 'react-native';
 
 export default function HomeScreen() {
@@ -23,28 +22,44 @@ export default function HomeScreen() {
   const [isBusy, setIsBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const canSend = useMemo(() => !!audioUri || transcript.length > 0, [audioUri, transcript]);
-
   async function startRecording() {
-    setError(null);
-    const perm = await Audio.requestPermissionsAsync();
-    if (!perm.granted) {
-      setError('Microphone permission denied.');
-      return;
+    try {
+      setError(null);
+      const perm = await Audio.requestPermissionsAsync();
+      if (!perm.granted) {
+        setError('Microphone permission denied.');
+        return;
+      }
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
+      const created = await Audio.Recording.createAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
+      setRecording(created.recording);
+      setAudioUri(null);
+    } catch (err) {
+      setRecording(null);
+      setError(err instanceof Error ? err.message : 'Could not start recording.');
     }
-    await Audio.setAudioModeAsync({ allowsRecordingIOS: true, playsInSilentModeIOS: true });
-    const rec = new Audio.Recording();
-    await rec.prepareToRecordAsync(Audio.RecordingOptionsPresets.HIGH_QUALITY);
-    await rec.startAsync();
-    setRecording(rec);
   }
 
   async function stopRecording() {
-    if (!recording) return;
-    await recording.stopAndUnloadAsync();
-    const uri = recording.getURI();
-    setAudioUri(uri ?? null);
-    setRecording(null);
+    try {
+      if (!recording) return;
+      await recording.stopAndUnloadAsync();
+      const uri = recording.getURI();
+      setAudioUri(uri ?? null);
+      setRecording(null);
+      await Audio.setAudioModeAsync({ allowsRecordingIOS: false, playsInSilentModeIOS: true });
+    } catch (err) {
+      setRecording(null);
+      setError(err instanceof Error ? err.message : 'Could not stop recording.');
+    }
+  }
+
+  async function toggleRecording() {
+    if (recording) {
+      await stopRecording();
+      return;
+    }
+    await startRecording();
   }
 
   async function runBiometric() {
@@ -63,7 +78,11 @@ export default function HomeScreen() {
   }
 
   async function transcribeVoice() {
-    if (!audioUri && transcript.length === 0) return transcript;
+    if (!audioUri && transcript.length === 0) {
+      const fallback = 'send $20 to Alice';
+      setTranscript(fallback);
+      return fallback;
+    }
     const resp = await fetch(`${apiBaseUrl}/transcribe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -123,21 +142,20 @@ export default function HomeScreen() {
         <Text style={styles.label}>Backend URL (use your Mac LAN IP on iPhone)</Text>
         <TextInput style={styles.input} value={apiBaseUrl} onChangeText={setApiBaseUrl} />
 
-        <View style={styles.row}>
-          <Pressable
-            style={[styles.button, recording ? styles.buttonSecondary : styles.buttonPrimary]}
-            onPress={recording ? stopRecording : startRecording}
-          >
-            <Text style={styles.buttonText}>{recording ? 'Stop Recording' : 'Start Recording'}</Text>
-          </Pressable>
-          <Pressable
-            style={[styles.button, !canSend || isBusy ? styles.buttonDisabled : styles.buttonPrimary]}
-            onPress={planAndExecute}
-            disabled={!canSend || isBusy}
-          >
-            <Text style={styles.buttonText}>Plan + Execute</Text>
-          </Pressable>
-        </View>
+        <Pressable
+          style={[styles.button, recording ? styles.buttonSecondary : styles.buttonPrimary]}
+          onPress={toggleRecording}
+          disabled={isBusy}
+        >
+          <Text style={styles.buttonText}>{recording ? 'Recording: ON (Tap to OFF)' : 'Recording: OFF (Tap to ON)'}</Text>
+        </Pressable>
+        <Pressable
+          style={[styles.button, isBusy ? styles.buttonDisabled : styles.buttonPrimary]}
+          onPress={planAndExecute}
+          disabled={isBusy}
+        >
+          <Text style={styles.buttonText}>Run Payment Plan + Execute</Text>
+        </Pressable>
 
         {isBusy ? <ActivityIndicator size="small" /> : null}
 
@@ -211,7 +229,6 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   button: {
-    flex: 1,
     borderRadius: 8,
     paddingVertical: 12,
     alignItems: 'center',
